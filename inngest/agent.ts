@@ -1,4 +1,5 @@
 import { createAgent, createTool, openai } from "@inngest/agent-kit";
+import OpenAIClient from "openai";
 import { z } from "zod";
 import { inngest } from "./client";
 import { setJobCompleted, setJobError, setJobPending } from "./statusStore";
@@ -7,6 +8,12 @@ import { setJobCompleted, setJobError, setJobPending } from "./statusStore";
 const groq = openai({
   model: "openai/gpt-oss-120b",
   baseUrl: "https://api.groq.com/openai/v1",
+  apiKey: process.env.GROQ_API_KEY,
+});
+
+// Low-level Groq client for follow-up summarization calls
+const groqClient = new OpenAIClient({
+  baseURL: "https://api.groq.com/openai/v1",
   apiKey: process.env.GROQ_API_KEY,
 });
 
@@ -154,7 +161,38 @@ export const aiAgent = inngest.createFunction(
           .join("\n\n");
 
         if (toolText) {
-          response = toolText;
+          // Let the model produce a final answer that uses the tool output
+          const summarized = await step.run(
+            "summarize-from-tools",
+            async () => {
+              const completion = await groqClient.chat.completions.create({
+                model: "openai/gpt-oss-120b",
+                messages: [
+                  {
+                    role: "system",
+                    content:
+                      "You are a helpful assistant. Use the tool output to answer the user's question naturally and concisely. Do not just repeat the tool output verbatim; summarize it for the user.",
+                  },
+                  {
+                    role: "user",
+                    content: prompt,
+                  },
+                  {
+                    role: "assistant",
+                    content: `Tool output:\n\n${toolText}`,
+                  },
+                ],
+              });
+
+              return completion.choices[0].message?.content ?? "";
+            }
+          );
+
+          if (summarized) {
+            response = summarized;
+          } else {
+            response = toolText;
+          }
         }
       }
 
